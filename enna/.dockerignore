@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!target/
+target/*
+!target/jitsi-media-transform.jar
+!target/build-info.properties

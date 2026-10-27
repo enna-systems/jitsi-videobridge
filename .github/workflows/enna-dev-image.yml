@@ -1,0 +1,73 @@
+name: enna dev JVB
+
+on:
+  push:
+    branches: [dev, 'TKO/**']
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: enna-jvb-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Verify all modules and prepare image inputs
+        run: bash enna/build.sh
+      - name: Retain test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-reports
+          path: '**/target/surefire-reports/**'
+          retention-days: 7
+      - name: Retain verified image inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-inputs
+          path: enna/target/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-dev:
+    needs: verify
+    if: github.event_name != 'pull_request' && github.repository == 'enna-systems/jitsi-videobridge'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: image-inputs
+          path: enna/target
+      - name: Build and publish dev image
+        env:
+          DOCKER_PASSWORD_SCW_DEV: ${{ secrets.DOCKER_PASSWORD_SCW_DEV }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DOCKER_PASSWORD_SCW_DEV" ]; then
+            echo '::error::Configure the DOCKER_PASSWORD_SCW_DEV Actions secret, then rerun this failed job.'
+            exit 1
+          fi
+          IMAGE="rg.fr-par.scw.cloud/dev-enna-nsp/enna-jvb:stable-11248-vp9-${GITHUB_SHA}"
+          grep -Fx "enna.revision=${GITHUB_SHA}" enna/target/build-info.properties
+          docker build --platform linux/amd64 --build-arg ENNA_REVISION="$GITHUB_SHA" -t "$IMAGE" enna
+          printf '%s' "$DOCKER_PASSWORD_SCW_DEV" | docker login rg.fr-par.scw.cloud/dev-enna-nsp \
+            --username nologin --password-stdin
+          docker push "$IMAGE"
+          DIGEST=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}')
+          printf 'Verified source: `%s`\n\nImage: `%s`\n\nDigest: `%s`\n' \
+            "$GITHUB_SHA" "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
