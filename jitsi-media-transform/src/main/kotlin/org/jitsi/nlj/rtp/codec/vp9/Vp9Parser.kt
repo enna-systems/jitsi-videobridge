@@ -138,14 +138,26 @@ class Vp9Parser(
      * in flexible mode the scalability structure doesn't describe the temporal layers.
      */
     private fun addTemporalLayers(layers: MutableList<RtpLayerDesc>, sid: Int, maxTid: Int): Boolean {
-        var changed = false
+        // Create lower spatial layers first, so full SVC dependencies do not depend on packet arrival order.
+        var changed = if (sid > 0) addTemporalLayers(layers, sid - 1, maxTid) else false
 
         for (tid in 1..maxTid) {
             val layer = layers.find { it.sid == sid && it.tid == tid }
             if (layer == null) {
                 val prevLayer = layers.find { it.sid == sid && it.tid == tid - 1 }
-                if (prevLayer != null) {
-                    val newLayer = prevLayer.copy(tid = tid, inherit = false)
+                if (prevLayer is VpxRtpLayerDesc) {
+                    // A temporal layer needs every lower temporal layer. Copying T0's dependencies would
+                    // omit T0 itself and make the allocator account for only this layer's incremental rate.
+                    val spatialDependency = layers.find { it.sid == sid - 1 && it.tid == tid } as? VpxRtpLayerDesc
+                    val newLayer = VpxRtpLayerDesc(
+                        eid = prevLayer.eid,
+                        tid = tid,
+                        sid = sid,
+                        height = prevLayer.height,
+                        frameRate = prevLayer.frameRate,
+                        dependencyLayers = arrayOf(prevLayer),
+                        softDependencyLayers = listOfNotNull(spatialDependency).toTypedArray()
+                    ).also { it.useSoftDependencies = prevLayer.useSoftDependencies }
                     layers.add(newLayer)
                     changed = true
                 }
